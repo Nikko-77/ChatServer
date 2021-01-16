@@ -4,6 +4,7 @@ project(ChatServer)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_BUILD_TYPE Debug)
 
 find_package(Boost REQUIRED thread system)
 find_package(nlohmann_json REQUIRED)
