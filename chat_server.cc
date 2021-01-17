@@ -34,16 +34,24 @@ class SocketWrapper {
 int SocketWrapper::s_current_id = 0;
 std::mutex SocketWrapper::mutex;
 
+void send_json_to(tcp::socket* socket, const json& msg) {
+	auto serialized_msg = msg.dump();
+	asio::write(*socket,asio::buffer(serialized_msg));
+}
+
 class SocketHandler {
 	public:
 		void start_handling( tcp::socket&& socket ) {
 			SocketWrapper wrapper(std::move(socket));
-			std::thread handling_thread(&SocketHandler::handle,this,wrapper.get_socket_ptr(),wrapper.get_id());
-			handling_thread.detach();
+			auto* socket_ptr = wrapper.get_socket_ptr();
+			int id = wrapper.get_id();
 			this->add(std::move(wrapper));
+			std::thread handling_thread(&SocketHandler::handle,this,socket_ptr,id);
+			handling_thread.detach();
 		}
 		void handle( tcp::socket* socket, int socket_id ) {
 			try {
+				this->broadcast(this->get_user_count_json());
 				while (true) {
 					asio::streambuf buf(4096);
 					auto buffer = buf.prepare(4096);
@@ -57,18 +65,19 @@ class SocketHandler {
 					auto str = oss.str();
 					auto message = json::parse(str);
 					std::cout << message.dump() << std::endl;
-					this->execute_json_command(message);
+					this->execute_json_command(socket, message);
 				}
 			} catch (std::exception& e) {
 				std::cerr << e.what() << std::endl;
 			}
 			this->remove(socket_id);
+			this->broadcast(this->get_user_count_json());
 		}
-
-		void execute_json_command(const json& data) {
+		void execute_json_command(tcp::socket* executor, const json& data) {
 			std::lock_guard guard(mutex);
 			try {
-				if ( data["type"].get<std::string>() == "message" ) {
+				auto message_type = data["type"].get<std::string>();
+				if ( message_type == "msg" ) {
 					auto user = data["name"].get<std::string>();
 					auto user_message = data["msg"].get<std::string>();
 					
@@ -76,17 +85,40 @@ class SocketHandler {
 					message["type"] = "msg";
 					message["name"] = user;
 					message["msg"] = user_message;
-					auto msg_str = message.dump();
 
-					for ( auto& socket : sockets ) {
-						asio::write(socket.get_socket(),asio::buffer(msg_str));
-					}
+					this->broadcast(message);
+				} else if ( message_type == "count" ) {
+					auto user_count_json = get_user_count_json();
+					send_json_to(executor,user_count_json);
 				}
 			} catch (std::exception& e) {
 				std::cerr << e.what() << std::endl;
 			}
 		}
 
+		void broadcast(const json& msg) {
+			auto serialized_msg = msg.dump();
+			for (auto& socket : sockets) {
+				try {
+					asio::write(socket.get_socket(), asio::buffer(serialized_msg));	
+				} catch (std::exception& e) {
+					std::cerr << e.what() << std::endl;
+				}
+			}
+		}
+
+		json get_user_count_json() {
+			auto user_count = this->get_user_count();
+			json json_msg;
+			json_msg["type"] = "count";
+			json_msg["count"] = user_count;
+			return json_msg;
+		}
+
+		int get_user_count() {
+			return sockets.size();
+		}
+		
 		SocketWrapper& add( SocketWrapper&& wrapper ) {
 			std::lock_guard guard(mutex);
 			sockets.push_back(std::move(wrapper));
